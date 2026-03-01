@@ -23,10 +23,11 @@ use smg_grpc_client::{
 ///
 /// Each backend client converts this into its own proto format:
 /// - SGLang: full pixel_values + model_specific_tensors + placeholders
-/// - vLLM: raw image bytes only (vLLM handles preprocessing internally)
+/// - vLLM: full pixel_values + model_specific_tensors + placeholders + mm_hashes
+/// - TRT-LLM: raw image bytes only (TRT-LLM handles preprocessing internally)
 #[derive(Debug, Clone)]
 pub struct MultimodalData {
-    /// Raw image bytes (JPEG/PNG) for each image
+    /// Raw image bytes (JPEG/PNG) for each image (TRT-LLM only)
     pub image_data: Vec<Vec<u8>>,
     /// Preprocessed pixel values as raw little-endian f32 bytes
     pub pixel_values: Vec<u8>,
@@ -36,8 +37,20 @@ pub struct MultimodalData {
     pub model_specific_tensors: HashMap<String, TensorBytes>,
     /// Image token ID for downstream pad_input_ids_func
     pub im_token_id: Option<u32>,
-    /// Placeholder offsets: where each image's tokens are in input_ids
+    /// Placeholder offsets: where each image's tokens are in input_ids (full structural range).
     pub mm_placeholders: Vec<(u32, u32)>, // (offset, length)
+    /// Patch-only placeholder offsets for sglang: contiguous runs of im_token_id
+    /// within each expansion, computed during token expansion at zero extra cost.
+    /// sglang's embedding merge expects offsets aligned 1:1 with vision encoder output.
+    pub sglang_patch_offsets: Option<Vec<(u32, u32)>>, // (offset, length)
+    /// Per-image blake3 hex hashes for encoder output caching (vLLM only)
+    pub mm_hashes: Vec<String>,
+    /// Tensor keys whose first dim is per-image (batched).
+    pub batched_keys: Vec<String>,
+    /// Tensor keys that need flat slicing: maps tensor name → sizes tensor name.
+    /// e.g. {"pixel_values": "patches_per_image"} means pixel_values should be
+    /// split using per-item sizes from the patches_per_image tensor.
+    pub flat_keys: HashMap<String, String>,
 }
 
 /// Raw tensor bytes with shape and dtype metadata.
@@ -50,6 +63,11 @@ pub struct TensorBytes {
 
 impl MultimodalData {
     /// Convert to SGLang proto MultimodalInputs, consuming self to avoid clones.
+    ///
+    /// Uses precomputed `sglang_patch_offsets` (contiguous runs of im_token_id)
+    /// when available, falling back to `mm_placeholders` for models without
+    /// structural tokens. Patch-only offsets are computed at zero extra cost
+    /// during token expansion in `expand_tokens()`.
     pub fn into_sglang_proto(self) -> sglang::MultimodalInputs {
         let model_specific_tensors = self
             .model_specific_tensors
@@ -67,7 +85,8 @@ impl MultimodalData {
             .collect();
 
         let mm_placeholders = self
-            .mm_placeholders
+            .sglang_patch_offsets
+            .unwrap_or(self.mm_placeholders)
             .into_iter()
             .map(|(offset, length)| sglang::PlaceholderRange { offset, length })
             .collect();
@@ -93,8 +112,39 @@ impl MultimodalData {
 
     /// Convert to vLLM proto MultimodalInputs, consuming self to avoid clones.
     pub fn into_vllm_proto(self) -> vllm::MultimodalInputs {
+        let model_specific_tensors = self
+            .model_specific_tensors
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    vllm::TensorData {
+                        data: v.data,
+                        shape: v.shape,
+                        dtype: v.dtype,
+                    },
+                )
+            })
+            .collect();
+
+        let mm_placeholders = self
+            .mm_placeholders
+            .into_iter()
+            .map(|(offset, length)| vllm::PlaceholderRange { offset, length })
+            .collect();
+
         vllm::MultimodalInputs {
-            image_data: self.image_data,
+            pixel_values: Some(vllm::TensorData {
+                data: self.pixel_values,
+                shape: self.pixel_values_shape,
+                dtype: "float32".to_string(),
+            }),
+            model_specific_tensors,
+            im_token_id: self.im_token_id,
+            mm_placeholders,
+            mm_hashes: self.mm_hashes,
+            batched_keys: self.batched_keys,
+            flat_keys: self.flat_keys,
         }
     }
 
