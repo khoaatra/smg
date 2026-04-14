@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use openai_protocol::{model_card::ModelCard, model_type::ModelType, worker::ProviderType};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use tracing::{debug, info};
 use wfaas::{StepExecutor, StepId, StepResult, WorkflowContext, WorkflowError, WorkflowResult};
 
@@ -36,7 +36,7 @@ pub struct ModelsResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelInfo {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_aliases")]
     pub aliases: Vec<String>,
     #[serde(default)]
     pub object: String,
@@ -44,6 +44,24 @@ pub struct ModelInfo {
     pub created: Option<u64>,
     #[serde(default)]
     pub owned_by: Option<String>,
+}
+
+fn deserialize_aliases<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum AliasesField {
+        Values(Vec<String>),
+        Null(Option<()>),
+        Other(serde::de::IgnoredAny),
+    }
+
+    Ok(match AliasesField::deserialize(deserializer)? {
+        AliasesField::Values(values) => values,
+        AliasesField::Null(_) | AliasesField::Other(_) => Vec::new(),
+    })
 }
 
 /// Convert a flat upstream `/v1/models` list into `ModelCard`s.
@@ -323,10 +341,11 @@ impl StepExecutor<WorkerWorkflowData> for DiscoverModelsStep {
 #[cfg(test)]
 mod tests {
     use openai_protocol::{model_type::ModelType, worker::ProviderType};
+    use serde_json::json;
 
     use super::{
         apply_provider_hint, build_model_cards, group_models_into_cards, infer_model_type_from_id,
-        ModelInfo,
+        ModelInfo, ModelsResponse,
     };
 
     #[test]
@@ -402,5 +421,41 @@ mod tests {
         apply_provider_hint(&mut cards, Some(&ProviderType::Gemini));
 
         assert_eq!(cards[0].provider, Some(ProviderType::Gemini));
+    }
+
+    #[test]
+    fn models_response_tolerates_null_aliases() {
+        let response: ModelsResponse = serde_json::from_value(json!({
+            "data": [
+                {
+                    "id": "grok-4-0709",
+                    "aliases": null,
+                    "object": "model",
+                    "created": 1_752_019_200
+                }
+            ],
+            "object": "list"
+        }))
+        .expect("null aliases should deserialize");
+
+        assert_eq!(response.data[0].aliases, Vec::<String>::new());
+    }
+
+    #[test]
+    fn models_response_ignores_malformed_aliases_field() {
+        let response: ModelsResponse = serde_json::from_value(json!({
+            "data": [
+                {
+                    "id": "grok-4-0709",
+                    "aliases": "grok-4",
+                    "object": "model",
+                    "created": 1_752_019_200
+                }
+            ],
+            "object": "list"
+        }))
+        .expect("malformed aliases should not fail discovery");
+
+        assert_eq!(response.data[0].aliases, Vec::<String>::new());
     }
 }

@@ -464,19 +464,36 @@ impl WorkerModels {
     /// Find a model by ID.
     ///
     /// Lookup order:
-    /// 1. Exact ID or alias match via `ModelCard::matches`
-    /// 2. Prefix fallback for versioned variants like `grok-4-0709` or
+    /// 1. Exact ID match
+    /// 2. Alias match
+    /// 3. Prefix fallback for versioned variants like `grok-4-0709` or
     ///    `grok-4.20-0309-reasoning`, preferring the shortest matching ID
     ///    first and then the highest `created_at` as a tiebreaker among cards
-    ///    whose IDs start with `{id}-` or `{id}.`
+    ///    whose IDs start with `{id}-` or `{id}.`, with lexical ID ordering
+    ///    as a final stable tiebreaker.
     pub fn find(&self, id: &str) -> Option<&ModelCard> {
         let exact = match self {
             Self::Wildcard => None,
-            Self::Single(card) => card.matches(id).then_some(card.as_ref()),
-            Self::Multi(cards) => cards.iter().find(|m| m.matches(id)),
+            Self::Single(card) => (card.id == id).then_some(card.as_ref()),
+            Self::Multi(cards) => cards.iter().find(|card| card.id == id),
         };
         if exact.is_some() {
             return exact;
+        }
+
+        let alias = match self {
+            Self::Wildcard => None,
+            Self::Single(card) => card
+                .aliases
+                .iter()
+                .any(|alias| alias == id)
+                .then_some(card.as_ref()),
+            Self::Multi(cards) => cards
+                .iter()
+                .find(|card| card.aliases.iter().any(|alias| alias == id)),
+        };
+        if alias.is_some() {
+            return alias;
         }
 
         let candidates = self.all();
@@ -491,7 +508,13 @@ impl WorkerModels {
                     .strip_prefix(id)
                     .is_some_and(|rest| rest.starts_with('-') || rest.starts_with('.'))
             })
-            .min_by_key(|card| (card.id.len(), std::cmp::Reverse(card.created_at)))
+            .min_by_key(|card| {
+                (
+                    card.id.len(),
+                    std::cmp::Reverse(card.created_at),
+                    card.id.as_str(),
+                )
+            })
     }
 
     /// Returns `true` if the worker supports the given model ID.
@@ -560,12 +583,24 @@ mod worker_models_tests {
     }
 
     #[test]
-    fn find_prefers_exact_alias_match_before_prefix_fallback() {
+    fn find_prefers_alias_match_before_prefix_fallback() {
         let models = WorkerModels::from(vec![ModelCard::new("grok-4-0709").with_alias("grok-4")]);
 
         let result = models.find("grok-4").expect("alias match");
 
         assert_eq!(result.id, "grok-4-0709");
+    }
+
+    #[test]
+    fn find_prefers_exact_id_over_alias_match() {
+        let models = WorkerModels::from(vec![
+            ModelCard::new("grok-4-0709").with_alias("grok-4"),
+            card("grok-4", 1_752_019_201),
+        ]);
+
+        let result = models.find("grok-4").expect("exact id match");
+
+        assert_eq!(result.id, "grok-4");
     }
 
     #[test]
@@ -587,6 +622,18 @@ mod worker_models_tests {
         let result = models.find("grok-4-fast").expect("latest prefix match");
 
         assert_eq!(result.id, "grok-4-fast-v2");
+    }
+
+    #[test]
+    fn find_prefix_fallback_uses_lexical_id_as_stable_final_tiebreaker() {
+        let models = WorkerModels::from(vec![
+            card("grok-4-fast-ab", 1_756_944_000),
+            card("grok-4-fast-aa", 1_756_944_000),
+        ]);
+
+        let result = models.find("grok-4-fast").expect("stable prefix match");
+
+        assert_eq!(result.id, "grok-4-fast-aa");
     }
 
     #[test]
