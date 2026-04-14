@@ -27,6 +27,7 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
 /// OpenAI /v1/models response format.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelsResponse {
+    #[serde(default, deserialize_with = "deserialize_model_rows")]
     pub data: Vec<ModelInfo>,
     #[serde(default)]
     pub object: String,
@@ -64,6 +65,26 @@ where
     })
 }
 
+fn deserialize_model_rows<'de, D>(deserializer: D) -> Result<Vec<ModelInfo>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum DataField {
+        Rows(Vec<serde_json::Value>),
+        Other(serde::de::IgnoredAny),
+    }
+
+    Ok(match DataField::deserialize(deserializer)? {
+        DataField::Rows(rows) => rows
+            .into_iter()
+            .filter_map(|row| serde_json::from_value::<ModelInfo>(row).ok())
+            .collect(),
+        DataField::Other(_) => Vec::new(),
+    })
+}
+
 /// Convert a flat upstream `/v1/models` list into `ModelCard`s.
 ///
 /// Upstream IDs are preserved as-is. Virtual short aliases like `grok-4` are
@@ -86,7 +107,7 @@ pub fn build_model_cards(models: Vec<ModelInfo>) -> Vec<ModelCard> {
         .collect()
 }
 
-fn apply_provider_hint(model_cards: &mut [ModelCard], provider: Option<&ProviderType>) {
+pub(crate) fn apply_provider_hint(model_cards: &mut [ModelCard], provider: Option<&ProviderType>) {
     if let Some(provider) = provider {
         for card in model_cards {
             card.provider = Some(provider.clone());
@@ -457,5 +478,35 @@ mod tests {
         .expect("malformed aliases should not fail discovery");
 
         assert_eq!(response.data[0].aliases, Vec::<String>::new());
+    }
+
+    #[test]
+    fn models_response_skips_malformed_rows_but_keeps_valid_models() {
+        let response: ModelsResponse = serde_json::from_value(json!({
+            "data": [
+                {
+                    "id": 42,
+                    "object": "model",
+                    "created": 1_752_019_199
+                },
+                {
+                    "id": "grok-4-0709",
+                    "aliases": ["grok-4"],
+                    "object": "model",
+                    "created": 1_752_019_200
+                },
+                {
+                    "id": "grok-4-fast-reasoning",
+                    "object": "model",
+                    "created": "bad"
+                }
+            ],
+            "object": "list"
+        }))
+        .expect("bad rows should be skipped, not fail the response");
+
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].id, "grok-4-0709");
+        assert_eq!(response.data[0].aliases, vec!["grok-4"]);
     }
 }

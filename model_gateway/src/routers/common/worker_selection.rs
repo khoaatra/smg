@@ -16,7 +16,7 @@ use crate::{
         error,
     },
     worker::{ConnectionMode, ProviderType, RuntimeType, Worker, WorkerRegistry, WorkerType},
-    workflow::steps::external::{group_models_into_cards, ModelsResponse},
+    workflow::steps::external::{apply_provider_hint, group_models_into_cards, ModelsResponse},
 };
 
 /// Holds references to shared infrastructure needed for worker selection.
@@ -244,12 +244,7 @@ async fn refresh_worker_models(
                 Ok(resp) => {
                     let provider = ProviderType::from_url(&url);
                     let mut model_cards = group_models_into_cards(resp.data);
-
-                    if let Some(ref provider) = provider {
-                        for card in &mut model_cards {
-                            card.provider = Some(provider.clone());
-                        }
-                    }
+                    apply_provider_hint(&mut model_cards, provider.as_ref());
 
                     if !model_cards.is_empty() {
                         tracing::info!(
