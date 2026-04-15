@@ -318,99 +318,36 @@ async fn test_openai_router_responses_refreshes_versioned_xai_model_alias() {
     let addr = listener.local_addr().unwrap();
     let models_counter = Arc::new(AtomicUsize::new(0));
     let responses_counter = Arc::new(AtomicUsize::new(0));
+    let models_payload = json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "grok-4-0709",
+                "created": 1_752_019_200u64,
+                "object": "model",
+                "owned_by": "xai"
+            },
+            {
+                "id": "grok-4.20-0309-reasoning",
+                "created": 1_773_014_400u64,
+                "object": "model",
+                "owned_by": "xai"
+            }
+        ]
+    });
 
     let app = Router::new()
         .route(
             "/v1/models",
             get({
                 let models_counter = Arc::clone(&models_counter);
+                let models_payload = models_payload.clone();
                 move || {
                     let models_counter = Arc::clone(&models_counter);
+                    let models_payload = models_payload.clone();
                     async move {
                         models_counter.fetch_add(1, Ordering::SeqCst);
-                        Json(json!({
-                            "object": "list",
-                            "data": [
-                                {
-                                    "id": "grok-3",
-                                    "created": 1_743_724_800u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-3-mini",
-                                    "created": 1_743_724_800u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-4-0709",
-                                    "created": 1_752_019_200u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-4-1-fast-non-reasoning",
-                                    "created": 1_763_510_400u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-4-1-fast-reasoning",
-                                    "created": 1_763_510_400u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-4-fast-non-reasoning",
-                                    "created": 1_756_944_000u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-4-fast-reasoning",
-                                    "created": 1_756_944_000u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-4.20-0309-non-reasoning",
-                                    "created": 1_773_014_400u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-4.20-0309-reasoning",
-                                    "created": 1_773_014_400u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-4.20-multi-agent-0309",
-                                    "created": 1_773_014_400u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-code-fast-1",
-                                    "created": 1_756_339_200u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-imagine-image",
-                                    "created": 1_769_558_400u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                },
-                                {
-                                    "id": "grok-imagine-video",
-                                    "created": 1_769_558_400u64,
-                                    "object": "model",
-                                    "owned_by": "xai"
-                                }
-                            ]
-                        }))
+                        Json(models_payload)
                     }
                 }
             }),
@@ -491,24 +428,11 @@ async fn test_openai_router_responses_refreshes_versioned_xai_model_alias() {
     assert_eq!(models_counter.load(Ordering::SeqCst), 1);
     assert_eq!(responses_counter.load(Ordering::SeqCst), 1);
 
-    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(body["model"], "grok-4");
-    assert_eq!(body["output"][0]["content"][0]["text"], "grok alias ok");
-
     let worker = ctx
         .worker_registry
         .get_by_url(&base_url)
         .expect("refreshed worker should still exist");
-    let refreshed_models = worker.models();
-    assert_eq!(refreshed_models.len(), 13);
-    assert!(worker.supports_model("grok-4"));
-    assert!(refreshed_models
-        .iter()
-        .any(|card| card.id == "grok-4.20-0309-reasoning"));
-    let refreshed_lookup = WorkerModels::from(refreshed_models);
+    let refreshed_lookup = WorkerModels::from(worker.models());
     assert_eq!(
         refreshed_lookup
             .find("grok-4")

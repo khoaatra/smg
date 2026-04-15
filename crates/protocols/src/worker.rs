@@ -583,33 +583,18 @@ mod worker_models_tests {
     }
 
     #[test]
-    fn find_prefers_alias_match_before_prefix_fallback() {
-        let models = WorkerModels::from(vec![ModelCard::new("grok-4-0709").with_alias("grok-4")]);
-
-        let result = models.find("grok-4").expect("alias match");
-
-        assert_eq!(result.id, "grok-4-0709");
-    }
-
-    #[test]
-    fn find_prefers_exact_id_over_alias_match() {
+    fn find_exact_and_alias_matches_beat_prefix_fallback() {
         let models = WorkerModels::from(vec![
             ModelCard::new("grok-4-0709").with_alias("grok-4"),
             card("grok-4", 1_752_019_201),
+            ModelCard::new("grok-4-fast-v1").with_alias("grok-4-fast"),
         ]);
 
-        let result = models.find("grok-4").expect("exact id match");
-
-        assert_eq!(result.id, "grok-4");
-    }
-
-    #[test]
-    fn find_uses_prefix_fallback_for_versioned_models() {
-        let models = WorkerModels::from(vec![card("grok-4-0709", 1_752_019_200)]);
-
-        let result = models.find("grok-4").expect("prefix fallback");
-
-        assert_eq!(result.id, "grok-4-0709");
+        assert_eq!(models.find("grok-4").expect("exact id match").id, "grok-4");
+        assert_eq!(
+            models.find("grok-4-fast").expect("alias match").id,
+            "grok-4-fast-v1"
+        );
     }
 
     #[test]
@@ -637,41 +622,22 @@ mod worker_models_tests {
     }
 
     #[test]
-    fn find_prefix_fallback_prefers_shortest_direct_descendant() {
+    fn find_prefix_fallback_handles_shortest_dot_and_guard_cases() {
         let models = WorkerModels::from(vec![
             card("grok-4-0709", 1_752_019_200),
             card("grok-4.20-0309-reasoning", 1_773_014_400),
-            card("grok-4.20-0309-non-reasoning", 1_773_014_399),
+            card("grok-40", 1_773_014_399),
         ]);
 
-        let result = models.find("grok-4").expect("shortest prefix match");
-
-        assert_eq!(result.id, "grok-4-0709");
-    }
-
-    #[test]
-    fn find_prefix_fallback_allows_dot_variants() {
-        let models = WorkerModels::from(vec![
-            card("grok-4.20-0309-reasoning", 1_773_014_400),
-            card("grok-4.20-0309-non-reasoning", 1_773_014_399),
-        ]);
-
-        let result = models.find("grok-4.20").expect("dot prefix match");
-
-        assert_eq!(result.id, "grok-4.20-0309-reasoning");
-    }
-
-    #[test]
-    fn find_prefix_fallback_rejects_false_positive_family_match() {
-        let models = WorkerModels::from(vec![card("grok-40", 100)]);
-
-        assert!(models.find("grok-4").is_none());
-    }
-
-    #[test]
-    fn find_prefix_fallback_rejects_truncated_family_name() {
-        let models = WorkerModels::from(vec![card("grok-4-0709", 1_752_019_200)]);
-
+        assert_eq!(
+            models.find("grok-4").expect("shortest prefix match").id,
+            "grok-4-0709"
+        );
+        assert_eq!(
+            models.find("grok-4.20").expect("dot prefix match").id,
+            "grok-4.20-0309-reasoning"
+        );
+        assert!(models.find("grok-4x").is_none());
         assert!(models.find("grok").is_none());
     }
 }

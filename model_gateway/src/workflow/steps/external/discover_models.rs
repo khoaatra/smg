@@ -370,31 +370,13 @@ mod tests {
     };
 
     #[test]
-    fn group_models_into_cards_preserves_created_at_and_aliases() {
-        let cards = group_models_into_cards(vec![ModelInfo {
-            id: "grok-4-0709".to_string(),
-            aliases: vec!["grok-4".to_string()],
-            object: "model".to_string(),
-            created: Some(1_752_019_200),
-            owned_by: None,
-        }]);
-
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].id, "grok-4-0709");
-        assert_eq!(cards[0].aliases, vec!["grok-4"]);
-        assert_eq!(cards[0].provider, Some(ProviderType::XAI));
-        assert_eq!(cards[0].model_type, ModelType::LLM);
-        assert_eq!(cards[0].created_at, 1_752_019_200);
-    }
-
-    #[test]
-    fn build_model_cards_keeps_flat_ids_for_prefix_fallback_lookup() {
-        let cards = build_model_cards(vec![
+    fn group_models_into_cards_preserves_flat_ids_and_metadata() {
+        let cards = group_models_into_cards(vec![
             ModelInfo {
-                id: "gpt-4o-2024-05-13".to_string(),
-                aliases: Vec::new(),
+                id: "grok-4-0709".to_string(),
+                aliases: vec!["grok-4".to_string()],
                 object: "model".to_string(),
-                created: Some(1_715_000_000),
+                created: Some(1_752_019_200),
                 owned_by: None,
             },
             ModelInfo {
@@ -407,20 +389,20 @@ mod tests {
         ]);
 
         assert_eq!(cards.len(), 2);
-        assert_eq!(cards[0].aliases, Vec::<String>::new());
+        assert_eq!(cards[0].id, "grok-4-0709");
+        assert_eq!(cards[0].aliases, vec!["grok-4"]);
+        assert_eq!(cards[0].provider, Some(ProviderType::XAI));
+        assert_eq!(cards[0].model_type, ModelType::LLM);
+        assert_eq!(cards[0].created_at, 1_752_019_200);
         assert_eq!(cards[1].aliases, Vec::<String>::new());
     }
 
     #[test]
-    fn infer_model_type_marks_reasoning_before_visionish_suffixes() {
+    fn infer_model_type_handles_reasoning_and_vision_overlap() {
         assert_eq!(
             infer_model_type_from_id("grok-4-fast-reasoning"),
             ModelType::REASONING_LLM
         );
-    }
-
-    #[test]
-    fn infer_model_type_preserves_vision_when_reasoning_and_vision_both_match() {
         assert_eq!(
             infer_model_type_from_id("gpt-4o-reasoning-preview"),
             ModelType::FULL_LLM
@@ -445,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn models_response_tolerates_null_aliases() {
+    fn models_response_tolerates_malformed_aliases_and_skips_bad_rows() {
         let response: ModelsResponse = serde_json::from_value(json!({
             "data": [
                 {
@@ -453,60 +435,27 @@ mod tests {
                     "aliases": null,
                     "object": "model",
                     "created": 1_752_019_200
-                }
-            ],
-            "object": "list"
-        }))
-        .expect("null aliases should deserialize");
-
-        assert_eq!(response.data[0].aliases, Vec::<String>::new());
-    }
-
-    #[test]
-    fn models_response_ignores_malformed_aliases_field() {
-        let response: ModelsResponse = serde_json::from_value(json!({
-            "data": [
+                },
                 {
-                    "id": "grok-4-0709",
+                    "id": "grok-4-fast-reasoning",
                     "aliases": "grok-4",
                     "object": "model",
                     "created": 1_752_019_200
-                }
-            ],
-            "object": "list"
-        }))
-        .expect("malformed aliases should not fail discovery");
-
-        assert_eq!(response.data[0].aliases, Vec::<String>::new());
-    }
-
-    #[test]
-    fn models_response_skips_malformed_rows_but_keeps_valid_models() {
-        let response: ModelsResponse = serde_json::from_value(json!({
-            "data": [
+                },
                 {
                     "id": 42,
                     "object": "model",
                     "created": 1_752_019_199
-                },
-                {
-                    "id": "grok-4-0709",
-                    "aliases": ["grok-4"],
-                    "object": "model",
-                    "created": 1_752_019_200
-                },
-                {
-                    "id": "grok-4-fast-reasoning",
-                    "object": "model",
-                    "created": "bad"
                 }
             ],
             "object": "list"
         }))
-        .expect("bad rows should be skipped, not fail the response");
+        .expect("bad rows should be skipped and bad aliases tolerated");
 
-        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data.len(), 2);
         assert_eq!(response.data[0].id, "grok-4-0709");
-        assert_eq!(response.data[0].aliases, vec!["grok-4"]);
+        assert_eq!(response.data[0].aliases, Vec::<String>::new());
+        assert_eq!(response.data[1].id, "grok-4-fast-reasoning");
+        assert_eq!(response.data[1].aliases, Vec::<String>::new());
     }
 }

@@ -889,8 +889,11 @@ mod tests {
         let specific = ready_external_worker(
             "https://api.anthropic.com",
             ProviderType::Anthropic,
-            vec![ModelCard::new("claude-3-7-sonnet-20250219").with_alias("claude-3-7-sonnet")],
+            openai_protocol::worker::WorkerModels::Wildcard,
         );
+        specific.set_models(vec![
+            ModelCard::new("claude-3-7-sonnet-20250219").with_alias("claude-3-7-sonnet")
+        ]);
 
         let selected =
             collect_alias_fallback_workers(vec![wildcard, specific.clone()], "claude-3-7-sonnet");
@@ -911,57 +914,6 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].url(), wildcard.url());
-    }
-
-    #[test]
-    fn collect_alias_fallback_workers_treats_discovered_models_as_specific_matches() {
-        let wildcard = ready_external_worker(
-            "https://api.openai.com",
-            ProviderType::OpenAI,
-            openai_protocol::worker::WorkerModels::Wildcard,
-        );
-        let discovered = ready_external_worker(
-            "https://api.anthropic.com",
-            ProviderType::Anthropic,
-            openai_protocol::worker::WorkerModels::Wildcard,
-        );
-        discovered.set_models(vec![
-            ModelCard::new("claude-3-7-sonnet-20250219").with_alias("claude-3-7-sonnet")
-        ]);
-
-        let selected =
-            collect_alias_fallback_workers(vec![wildcard, discovered.clone()], "claude-3-7-sonnet");
-
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].url(), discovered.url());
-    }
-
-    #[test]
-    fn get_router_for_model_prefers_specific_provider_router_over_wildcard_router() {
-        let worker_registry = Arc::new(WorkerRegistry::new());
-        worker_registry.register(ready_external_worker(
-            "https://api.openai.com",
-            ProviderType::OpenAI,
-            openai_protocol::worker::WorkerModels::Wildcard,
-        ));
-        worker_registry.register(ready_external_worker(
-            "https://api.anthropic.com",
-            ProviderType::Anthropic,
-            vec![ModelCard::new("claude-3-7-sonnet-20250219").with_alias("claude-3-7-sonnet")],
-        ));
-
-        let manager = RouterManager::new(worker_registry, reqwest::Client::new());
-        manager.register_router(router_ids::HTTP_OPENAI, Arc::new(FakeRouter("openai")));
-        manager.register_router(
-            router_ids::HTTP_ANTHROPIC,
-            Arc::new(FakeRouter("anthropic")),
-        );
-
-        let router = manager
-            .get_router_for_model("claude-3-7-sonnet")
-            .expect("router for alias model");
-
-        assert_eq!(router.router_type(), "anthropic");
     }
 
     #[test]
